@@ -10,14 +10,20 @@ Deno.serve(async (req) => {
   try {
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, registration } = await req.json()
     const participant = registration?.participant
-    const sportDistances: Record<string, string[]> = { Walking: ['3K', '5K'], Running: ['3K', '5K', '10K', '21K'], Cycling: ['10K', '20K', '50K'] }
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !registration?.event_id || !participant?.name || !participant?.email || !participant?.phone || !participant?.shipping_address || !participant?.city || !participant?.pincode || !sportDistances[participant.sport_category]?.includes(participant.distance_category)) return json({ error: 'Payment or registration details are incomplete.' }, 400)
+    const fallbackRaceOptions: Record<string, string[]> = { Walking: ['3K', '5K'], Running: ['3K', '5K', '10K', '21K'], Cycling: ['10K', '20K', '50K'] }
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !registration?.event_id || !participant?.name || !participant?.email || !participant?.phone || !participant?.shipping_address || !participant?.city || !participant?.pincode || !participant?.sport_category || !participant?.distance_category) return json({ error: 'Payment or registration details are incomplete.' }, 400)
     const cryptoKey = await crypto.subtle.importKey('raw', new TextEncoder().encode(Deno.env.get('RAZORPAY_KEY_SECRET')!), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
     const signature = hex(await crypto.subtle.sign('HMAC', cryptoKey, new TextEncoder().encode(`${razorpay_order_id}|${razorpay_payment_id}`)))
     if (signature !== razorpay_signature) return json({ error: 'Payment signature is invalid.' }, 400)
     const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
     const { data: event } = await db.from('events').select('id,fee,status,category').eq('id', registration.event_id).single()
     if (!event || event.status !== 'published') return json({ error: 'This event is not available.' }, 404)
+    const { data: eventRaceOptions, error: raceOptionsError } = await db.from('event_race_options').select('race_type,distance').eq('event_id', event.id)
+    if (raceOptionsError) throw raceOptionsError
+    const validRaceOption = eventRaceOptions.length
+      ? eventRaceOptions.some(option => option.race_type === participant.sport_category && option.distance === participant.distance_category)
+      : fallbackRaceOptions[participant.sport_category]?.includes(participant.distance_category)
+    if (!validRaceOption) return json({ error: 'That race type and distance are not available for this event.' }, 400)
     if (event.category === 'reddit' && !/^https?:\/\/(www\.)?reddit\.com\/user\/[^/?#]+\/?$/i.test(participant.reddit_url || '')) return json({ error: 'Please provide a valid Reddit profile URL for this Reddit event.' }, 400)
     if (event.category === 'real_meetup' && (!participant.emergency_contact_name || !participant.emergency_contact_relationship || !participant.emergency_contact_phone || participant.meetup_waiver !== 'accepted')) return json({ error: 'Meet-up safety details or the participation waiver are missing.' }, 400)
     const razorpay = new Razorpay({ key_id: Deno.env.get('RAZORPAY_KEY_ID')!, key_secret: Deno.env.get('RAZORPAY_KEY_SECRET')! })
